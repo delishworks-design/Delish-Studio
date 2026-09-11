@@ -1,0 +1,47 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+}
+
+android {
+    namespace 'com.delish.pinster'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'com.delish.pinster'
+        minSdk 24
+        targetSdk 34
+        versionCode 1
+        versionName "1.0"
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_21
+        targetCompatibility JavaVersion.VERSION_21
+    }
+
+    kotlinOptions {
+        jvmTarget = "21"
+    }
+
+    signingConfigs {
+        release {
+            storeFile = file(project.findProperty("DELISH_KEYSTORE"))
+            storePassword = project.findProperty("DELISH_KEYSTORE_PASSWORD")
+            keyAlias = "delish"
+            keyPassword = project.findProperty("DELISH_KEY_PASSWORD")
+        }
+    }
+
+    buildTypes {
+        release {
+            signingConfig = signingConfigs.release
+        }
+    }
+}
+
+dependencies {
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("org.jsoup:jsoup:1.18.3")
+    implementation("androidx.core:core-ktx:1.15.0")
+}
