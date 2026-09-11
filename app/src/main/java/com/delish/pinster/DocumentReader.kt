@@ -56,6 +56,8 @@ object DocumentReader {
                 } ?: return "[Not a valid DOCX — no document.xml]"
 
                 val mainXml = safeReadEntry(zip, mainEntry)
+                if (mainXml.isBlank()) return "[DOCX file is empty or encrypted]"
+
                 val mainText = extractDocxParagraphs(mainXml)
 
                 val extras = mutableListOf<String>()
@@ -82,13 +84,12 @@ object DocumentReader {
                 }
 
                 val all = mutableListOf<String>()
-                if (mainText.isNotBlank()) all.add(mainText)
+                if (mainText.isNotBlank() && isReadableText(mainText)) all.add(mainText)
                 all.addAll(extras)
 
                 if (all.isEmpty()) {
-                    // Last resort: strip ALL XML tags from the main document
                     val rawText = stripXmlTags(mainXml)
-                    if (rawText.isNotBlank()) return rawText
+                    if (rawText.isNotBlank() && isReadableText(rawText)) return rawText
                     return "[DOCX file has no readable text]"
                 }
                 return all.joinToString("\n\n").trim()
@@ -98,9 +99,38 @@ object DocumentReader {
 
     private fun extractDocxParagraphs(xml: String): String {
         if (xml.isBlank()) return ""
-        val result = tryXmlParser(xml)
-        if (result.isNotBlank() && result.length > 10) return result
-        return regexExtractWText(xml)
+
+        // Method 1: XML parser (namespace-aware)
+        val parserResult = tryXmlParser(xml)
+        if (parserResult.isNotBlank() && parserResult.length > 10 && isReadableText(parserResult)) {
+            return parserResult
+        }
+
+        // Method 2: Regex with w:t namespace prefix
+        val regexResult = regexExtractDocxText(xml, withPrefix = true)
+        if (regexResult.isNotBlank() && regexResult.length > 10 && isReadableText(regexResult)) {
+            return regexResult
+        }
+
+        // Method 3: Regex without namespace prefix (fallback for unusual DOCX structures)
+        val regexNoPrefix = regexExtractDocxText(xml, withPrefix = false)
+        if (regexNoPrefix.isNotBlank() && regexNoPrefix.length > 10 && isReadableText(regexNoPrefix)) {
+            return regexNoPrefix
+        }
+
+        // Method 4: Try regex on the whole text of any <w:t> or <t> tags (flat extraction)
+        val flatResult = regexFlatText(xml)
+        if (flatResult.isNotBlank() && isReadableText(flatResult)) {
+            return flatResult
+        }
+
+        // Method 5: Strip XML tags as absolute last resort
+        val stripped = stripXmlTags(xml)
+        if (stripped.isNotBlank() && isReadableText(stripped)) {
+            return stripped
+        }
+
+        return ""
     }
 
     private fun tryXmlParser(xml: String): String {
@@ -166,16 +196,26 @@ object DocumentReader {
         } catch (_: Exception) { "" }
     }
 
-    private fun regexExtractWText(xml: String): String {
+    private fun regexExtractDocxText(xml: String, withPrefix: Boolean): String {
         if (xml.isBlank()) return ""
 
-        val textPattern = Regex("""<w:t[^>]*>([^<]*)</w:t>""")
+        val textTag = if (withPrefix) "w:t" else "t"
+        val paraTag = if (withPrefix) "w:p" else "p"
+        val runTag = if (withPrefix) "w:r" else "r"
+        val boldTag = if (withPrefix) "w:b" else "b"
+        val italicTag = if (withPrefix) "w:i" else "i"
+        val styleTag = if (withPrefix) "w:pStyle" else "pStyle"
+        val levelTag = if (withPrefix) "w:outlineLvl" else "outlineLvl"
+
+        val textPattern = Regex("""<$textTag[^>]*>([^<]*)</$textTag>""")
         val allTexts = textPattern.findAll(xml).map { it.groupValues[1].trim() }.filter { it.isNotEmpty() }.toList()
         if (allTexts.isEmpty()) return ""
 
-        val boldPattern = Regex("""<w:b\s*/>""")
-        val italicPattern = Regex("""<w:i\s*/>""")
-        val paraPattern = Regex("""<w:p[\s>].*?</w:p>""", RegexOption.DOT_MATCHES_ALL)
+        val boldPattern = Regex("""<$boldTag\s*/>""")
+        val italicPattern = Regex("""<$italicTag\s*/>""")
+        val paraPattern = Regex("""<$paraTag[\s>].*?</$paraTag>""", RegexOption.DOT_MATCHES_ALL)
+        val stylePattern = Regex("""<$styleTag[^>]*val="([^"]+)""")
+        val levelPattern = Regex("""<$levelTag[^>]*val="(\d+)"""")
 
         val paragraphs = mutableListOf<String>()
         for (paraMatch in paraPattern.findAll(xml)) {
@@ -184,14 +224,53 @@ object DocumentReader {
             val paraText = texts.joinToString("")
             if (paraText.isNotBlank()) {
                 var formatted = paraText
-                if (boldPattern.containsMatchIn(paraXml)) formatted = "**$formatted**"
-                if (italicPattern.containsMatchIn(paraXml)) formatted = "*$formatted*"
+
+                val styleMatch = stylePattern.find(paraXml)
+                val levelMatch = levelPattern.find(paraXml)
+                val outlineLevel = levelMatch?.groupValues?.get(1)?.toIntOrNull() ?: -1
+                val styleVal = styleMatch?.groupValues?.get(1) ?: ""
+
+                formatted = when {
+                    styleVal.contains("Heading1", true) || outlineLevel == 0 -> "# $formatted"
+                    styleVal.contains("Heading2", true) || outlineLevel == 1 -> "## $formatted"
+                    styleVal.contains("Heading3", true) || outlineLevel == 2 -> "### $formatted"
+                    styleVal.contains("Heading4", true) || outlineLevel == 3 -> "#### $formatted"
+                    else -> {
+                        if (boldPattern.containsMatchIn(paraXml)) formatted = "**$formatted**"
+                        if (italicPattern.containsMatchIn(paraXml)) formatted = "*$formatted*"
+                        formatted
+                    }
+                }
                 paragraphs.add(formatted)
             }
         }
 
         if (paragraphs.isNotEmpty()) return paragraphs.joinToString("\n\n")
         return allTexts.joinToString(" ")
+    }
+
+    private fun regexFlatText(xml: String): String {
+        val patterns = listOf(
+            Regex("""<w:t[^>]*>([^<]+)</w:t>"""),
+            Regex("""<t[^>]*>([^<]+)</t>""")
+        )
+        val allTexts = mutableListOf<String>()
+        for (pattern in patterns) {
+            val matches = pattern.findAll(xml).map { it.groupValues[1].trim() }.filter { it.isNotEmpty() }.toList()
+            if (matches.isNotEmpty()) {
+                allTexts.addAll(matches)
+                break
+            }
+        }
+        return allTexts.joinToString(" ").trim()
+    }
+
+    private fun isReadableText(text: String): Boolean {
+        if (text.isBlank()) return false
+        val alphanumeric = text.count { it.isLetterOrDigit() }
+        val total = text.length
+        if (total == 0) return false
+        return alphanumeric.toFloat() / total > 0.15f
     }
 
     private fun stripXmlTags(xml: String): String {
@@ -391,7 +470,7 @@ object DocumentReader {
 
                         if (content.startsWith("<?xml") || content.startsWith("<") || content.contains("<w:") || content.contains("<a:")) {
                             val text = stripXmlTags(content)
-                            if (text.isNotBlank() && text.length > 5) {
+                            if (text.isNotBlank() && text.length > 5 && isReadableText(text)) {
                                 val shortName = entry.name.substringAfterLast('/')
                                 result.appendLine("--- $shortName ---")
                                 result.appendLine(text)
@@ -413,14 +492,14 @@ object DocumentReader {
         return try {
             zip.getInputStream(entry).use { stream ->
                 val bytes = stream.readBytes()
-                try {
-                    String(bytes, Charsets.UTF_8)
-                } catch (_: Exception) {
-                    try {
-                        String(bytes, Charsets.ISO_8859_1)
-                    } catch (_: Exception) {
-                        ""
-                    }
+                if (bytes.isEmpty()) return ""
+                val text = String(bytes, Charsets.UTF_8)
+                // Check for replacement characters that indicate invalid UTF-8
+                if (text.contains('\uFFFD')) {
+                    // Try ISO-8859-1 instead
+                    String(bytes, Charsets.ISO_8859_1)
+                } else {
+                    text
                 }
             }
         } catch (_: Exception) { "" }

@@ -2189,17 +2189,6 @@ override fun onCreate(savedInstanceState: Bundle?) {
 
     // ── DOCUMENT HANDLING ──
 
-    private fun copyUriToFile(uri: Uri, name: String): File? {
-        return try {
-            val ext = name.substringAfterLast('.', "bin")
-            val file = File(cacheDir, "doc_${System.currentTimeMillis()}.$ext")
-            contentResolver.openInputStream(uri)?.use { input ->
-                file.outputStream().use { output -> input.copyTo(output) }
-            }
-            file
-        } catch (e: Exception) { null }
-    }
-
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (resultCode != RESULT_OK) return
@@ -2225,14 +2214,8 @@ override fun onCreate(savedInstanceState: Bundle?) {
             }
             2003 -> {
                 val uri = data?.data ?: return
-                val mimeType = contentResolver.getType(uri) ?: "document"
                 val name = uri.lastPathSegment?.substringAfterLast('/') ?: "document"
-                val file = copyUriToFile(uri, name)
-                val content = if (file != null) {
-                    DocumentReader.read(this@MainActivity, uri, name)
-                } else {
-                    contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }?.take(30000) ?: ""
-                }
+                val content = DocumentReader.read(this@MainActivity, uri, name)
                 pendingDocumentContent = content
                 pendingDocumentName = name
                 chatDocPreviewName.text = "\uD83D\uDCC4 $name"
