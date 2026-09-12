@@ -21,6 +21,10 @@ class SecureSettings(private val context: Context) {
         private const val PROVIDER = "provider"
         private const val ENDPOINT = "endpoint"
         private const val MODEL = "model"
+        private const val GENERAL_MODEL = "general_model"
+        private const val DOCUMENT_PRIMARY_MODEL = "document_primary_model"
+        private const val DOCUMENT_SECONDARY_MODEL = "document_secondary_model"
+        private const val SEO_MODEL = "seo_model"
         private const val API_KEY = "api_key"
         private const val BROWSERLESS_API_KEY = "browserless_api_key"
 
@@ -162,6 +166,42 @@ class SecureSettings(private val context: Context) {
             MODEL,
             DEFAULT_MODEL
         ) ?: DEFAULT_MODEL
+    }
+
+    fun saveGeneralModel(value: String) {
+        prefs.edit().putString(GENERAL_MODEL, value).apply()
+    }
+
+    fun getGeneralModel(): String {
+        return prefs.getString(GENERAL_MODEL, null)
+            ?: getModel()
+    }
+
+    fun saveDocumentPrimaryModel(value: String) {
+        prefs.edit().putString(DOCUMENT_PRIMARY_MODEL, value).apply()
+    }
+
+    fun getDocumentPrimaryModel(): String {
+        return prefs.getString(DOCUMENT_PRIMARY_MODEL, null)
+            ?: getModel()
+    }
+
+    fun saveDocumentSecondaryModel(value: String) {
+        prefs.edit().putString(DOCUMENT_SECONDARY_MODEL, value).apply()
+    }
+
+    fun getDocumentSecondaryModel(): String {
+        return prefs.getString(DOCUMENT_SECONDARY_MODEL, null)
+            ?: getModel()
+    }
+
+    fun saveSeoModel(value: String) {
+        prefs.edit().putString(SEO_MODEL, value).apply()
+    }
+
+    fun getSeoModel(): String {
+        return prefs.getString(SEO_MODEL, null)
+            ?: getModel()
     }
 
     fun saveApiKey(value: String) {

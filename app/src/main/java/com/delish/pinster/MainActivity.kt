@@ -104,6 +104,8 @@ class MainActivity : Activity() {
     private var pendingImageFile: java.io.File? = null
     private var pendingDocumentContent: String? = null
     private var pendingDocumentName: String? = null
+    private var pendingDocumentProfile: DocumentProfile? = null
+    private var pendingDocumentFingerprint: String? = null
     private var drawerWidth = 0
     private val ui = Handler(Looper.getMainLooper())
     private val http = okhttp3.OkHttpClient.Builder()
@@ -1830,18 +1832,53 @@ override fun onCreate(savedInstanceState: Bundle?) {
             docContent != null -> "\uD83D\uDCCE $pendingDocumentName"
             else -> t
         }
-        // For API: include document content in user message so AI can actually read it
-        val apiUserMsg = if (docContent != null) {
-            "$indicator\n\n---DOCUMENT CONTENT---\n$docContent\n---END DOCUMENT---"
-        } else indicator
+
+        val docProfile = pendingDocumentProfile
+        val docFingerprint = pendingDocumentFingerprint
+
         when {
             imgFile != null -> addChatUserWithImage(userMsg, imgFile)
-            docContent != null -> addChatUser(apiUserMsg)
+            docContent != null -> addChatUser(indicator)
             else -> addChatUser(indicator)
         }
 
         clearPendingImage()
         clearPendingDocument()
+
+        if (docContent != null && docProfile != null && docFingerprint != null && t.isNotBlank()) {
+            chatScope.launch(Dispatchers.IO) {
+                try {
+                    val answer = DocumentIntelligenceManager.analyze(
+                        this@MainActivity, docFingerprint, t, docProfile
+                    )
+                    val botMsg = "\uD83D\uDCC4 **$pendingDocumentName**\n\n$answer"
+                    launch(Dispatchers.Main) {
+                        addChatBot(botMsg)
+                        resetChatUI()
+                    }
+                } catch (e: Exception) {
+                    val sec = SecureSettings(this@MainActivity)
+                    val ep = sec.getEndpoint(); val md = sec.getDocumentSecondaryModel(); val ky = sec.getApiKey()
+                    if (ep.isBlank() || md.isBlank() || ky.isBlank()) {
+                        launch(Dispatchers.Main) { addChatBotFailed("API not configured."); resetChatUI() }
+                        return@launch
+                    }
+                    val contextResult = DocumentContextBuilder.build(docProfile, t, null)
+                    val client = AIClient()
+                    val result = client.generateDocumentAnalysis(ep, md, ky, contextResult.fullContext, t, 2000)
+                    result.fold(
+                        onSuccess = { answer ->
+                            val botMsg = "\uD83D\uDCC4 **$pendingDocumentName**\n\n$answer"
+                            launch(Dispatchers.Main) { addChatBot(botMsg); resetChatUI() }
+                        },
+                        onFailure = { err ->
+                            launch(Dispatchers.Main) { addChatBotFailed("Document analysis failed: ${err.message}"); resetChatUI() }
+                        }
+                    )
+                }
+            }
+            return
+        }
 
         val full = org.json.JSONArray()
         val imageNote = if (imgFile != null) {
@@ -1856,7 +1893,7 @@ override fun onCreate(savedInstanceState: Bundle?) {
         for (m in chatHistory) full.put(org.json.JSONObject().apply { put("role", m.first); put("content", m.second) })
 
         val sec = SecureSettings(this)
-        val ep = sec.getEndpoint(); val md = sec.getModel(); val ky = sec.getApiKey()
+        val ep = sec.getEndpoint(); val md = sec.getGeneralModel(); val ky = sec.getApiKey()
         if (ep.isEmpty() || md.isEmpty() || ky.isEmpty()) {
             ui.post { addChatBotFailed(getString(R.string.error_no_api)); resetChatUI() }
             return
@@ -1864,7 +1901,7 @@ override fun onCreate(savedInstanceState: Bundle?) {
 
         val body = org.json.JSONObject()
         body.put("model", md); body.put("messages", full)
-        body.put("temperature", 0.7); body.put("max_tokens", if (docContent != null) 4000 else 2000)
+        body.put("temperature", 0.7); body.put("max_tokens", 2000)
 
         val req = okhttp3.Request.Builder()
             .url(ep.trimEnd('/') + "/chat/completions")
@@ -2184,6 +2221,8 @@ override fun onCreate(savedInstanceState: Bundle?) {
     private fun clearPendingDocument() {
         pendingDocumentContent = null
         pendingDocumentName = null
+        pendingDocumentProfile = null
+        pendingDocumentFingerprint = null
         chatDocPreviewContainer.visibility = View.GONE
     }
 
@@ -2235,8 +2274,22 @@ override fun onCreate(savedInstanceState: Bundle?) {
                 val content = DocumentReader.read(this@MainActivity, uri, name)
                 pendingDocumentContent = content
                 pendingDocumentName = name
+                pendingDocumentProfile = null
+                pendingDocumentFingerprint = null
                 chatDocPreviewName.text = "\uD83D\uDCC4 $name"
                 chatDocPreviewContainer.visibility = View.VISIBLE
+
+                chatScope.launch(Dispatchers.IO) {
+                    try {
+                        val result = DocumentIntelligenceManager.understand(
+                            this@MainActivity, uri, name, content
+                        )
+                        pendingDocumentProfile = result.profile
+                        pendingDocumentFingerprint = result.fingerprint
+                    } catch (e: Exception) {
+                        android.util.Log.w("PINSTER_DOC", "Understanding failed: ${e.message}")
+                    }
+                }
             }
         }
     }
@@ -2291,7 +2344,7 @@ override fun onCreate(savedInstanceState: Bundle?) {
         chatThinkingText.visibility = View.VISIBLE
 
         val sec = SecureSettings(this)
-        val ep = sec.getEndpoint(); val md = sec.getModel(); val ky = sec.getApiKey()
+        val ep = sec.getEndpoint(); val md = sec.getSeoModel(); val ky = sec.getApiKey()
         if (ep.isEmpty() || md.isEmpty() || ky.isEmpty()) {
             ui.post { addChatBotFailed(getString(R.string.error_no_api)); resetChatUI() }
             return
@@ -2861,7 +2914,7 @@ override fun onCreate(savedInstanceState: Bundle?) {
             secureSettings.getEndpoint()
 
         val model =
-            secureSettings.getModel()
+            secureSettings.getSeoModel()
 
         val apiKey =
             secureSettings.getApiKey()

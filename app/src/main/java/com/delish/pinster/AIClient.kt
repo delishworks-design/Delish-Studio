@@ -343,6 +343,312 @@ Generate accurate Pinterest SEO from this evidence only.
         }
     }
 
+    // ── Document Understanding (Primary Model) ──────────────────────
+
+    fun generateDocumentUnderstanding(
+        endpoint: String,
+        model: String,
+        apiKey: String,
+        documentText: String,
+        metadata: String
+    ): Result<String> {
+
+        return try {
+
+            val url = endpoint.trimEnd('/') + "/chat/completions"
+
+            val systemPrompt = """
+You are a document intelligence system. Your ONLY job is to UNDERSTAND a document and produce a structured profile.
+
+RULES:
+- The document text is the ONLY source of truth.
+- Do NOT invent facts, numbers, dates, citations, names, or claims.
+- Do NOT fabricate information not present in the document.
+- Identify uncertainty where it exists.
+- Keep summaries compact but preserve important factual details.
+- Identify sections where possible.
+- Return ONLY valid JSON matching the schema below.
+
+Return exactly this JSON structure:
+
+{
+  "documentSummary": "2-4 sentence summary of the entire document",
+  "documentType": "type (e.g. report, article, contract, manual, presentation, spreadsheet, other)",
+  "mainTopic": "the primary subject/topic",
+  "sections": [
+    {
+      "id": "section_1",
+      "title": "Section Title",
+      "summary": "Compact summary of this section",
+      "startLocation": "approximate location or heading reference",
+      "endLocation": "approximate location or heading reference"
+    }
+  ],
+  "keyPoints": ["important point 1", "important point 2"],
+  "importantEntities": ["person/org/place 1", "entity 2"],
+  "importantNumbers": ["$10,000 budget", "12 months", "3 phases"],
+  "dates": ["January 2024", "Q3 2025"],
+  "definitions": [{"term": "KPI", "definition": "Key Performance Indicator"}],
+  "conclusions": ["conclusion 1", "conclusion 2"],
+  "keywords": ["keyword1", "keyword2", "keyword3"],
+  "warningsOrLimitations": ["limitation 1", "warning 1"]
+}
+
+Keep all fields compact. Limit sections to the most important ones (max 15).
+Keep keyPoints, importantEntities, importantNumbers, dates, definitions, conclusions, keywords, warningsOrLimitations to the most significant items (max 15 each).
+""".trimIndent()
+
+            val userPrompt = """
+DOCUMENT METADATA:
+$metadata
+
+DOCUMENT TEXT:
+$documentText
+
+Analyze this document and return the structured profile as JSON.
+""".trimIndent()
+
+            val messages = JSONArray()
+                .put(JSONObject().put("role", "system").put("content", systemPrompt))
+                .put(JSONObject().put("role", "user").put("content", userPrompt))
+
+            val body = JSONObject()
+                .put("model", model)
+                .put("messages", messages)
+                .put("response_format", JSONObject().put("type", "json_object"))
+                .put("max_tokens", 2500)
+                .put("temperature", 0.15)
+                .put("reasoning", JSONObject().put("effort", "none"))
+                .toString()
+
+            val request = Request.Builder()
+                .url(url)
+                .addHeader("Authorization", "Bearer $apiKey")
+                .addHeader("Content-Type", "application/json")
+                .addHeader("HTTP-Referer", "https://pinster.app")
+                .addHeader("X-Title", "Pinster")
+                .post(body.toRequestBody("application/json".toMediaType()))
+                .build()
+
+            client.newCall(request).execute().use { response ->
+                val responseBody = response.body?.string().orEmpty()
+
+                if (response.code == 402) {
+                    return Result.failure(Exception("Not enough OpenRouter credits for document understanding. Try a shorter document, lower-cost model, or add credits."))
+                }
+                if (!response.isSuccessful) {
+                    return Result.failure(Exception("HTTP ${response.code}: $responseBody"))
+                }
+
+                val json = JSONObject(responseBody)
+                val content = json.optJSONArray("choices")
+                    ?.optJSONObject(0)
+                    ?.optJSONObject("message")
+                    ?.optString("content")
+                    ?.trim()
+                    .orEmpty()
+
+                if (content.isBlank() || content == "null") {
+                    return Result.failure(Exception("AI returned an empty response."))
+                }
+
+                val cleanJson = content
+                    .removePrefix("```json")
+                    .removePrefix("```")
+                    .removeSuffix("```")
+                    .trim()
+
+                if (cleanJson.isBlank() || !cleanJson.startsWith("{")) {
+                    return Result.failure(Exception("AI returned invalid JSON."))
+                }
+
+                Result.success(cleanJson)
+            }
+
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    // ── Document Analysis (Secondary Model) ─────────────────────────
+
+    fun generateDocumentAnalysis(
+        endpoint: String,
+        model: String,
+        apiKey: String,
+        context: String,
+        question: String,
+        maxTokens: Int = 2000
+    ): Result<String> {
+
+        return try {
+
+            val url = endpoint.trimEnd('/') + "/chat/completions"
+
+            val systemPrompt = """
+You are a document analysis assistant. You answer questions based ONLY on the supplied document context.
+
+RULES:
+- Answer ONLY from the supplied document context.
+- If the information cannot be verified from the supplied context, state that it could not be verified from the available document sections.
+- Do NOT invent facts, numbers, dates, citations, names, or claims.
+- Do NOT fabricate page numbers, citations, or references.
+- Do NOT use knowledge outside the provided context.
+- Be concise and direct.
+- When quoting or referencing, note which section or area of the document it comes from.
+""".trimIndent()
+
+            val userPrompt = """
+DOCUMENT CONTEXT:
+$context
+
+QUESTION:
+$question
+
+Answer based on the document context above.
+""".trimIndent()
+
+            val messages = JSONArray()
+                .put(JSONObject().put("role", "system").put("content", systemPrompt))
+                .put(JSONObject().put("role", "user").put("content", userPrompt))
+
+            val body = JSONObject()
+                .put("model", model)
+                .put("messages", messages)
+                .put("max_tokens", maxTokens)
+                .put("temperature", 0.3)
+                .put("reasoning", JSONObject().put("effort", "none"))
+                .toString()
+
+            val request = Request.Builder()
+                .url(url)
+                .addHeader("Authorization", "Bearer $apiKey")
+                .addHeader("Content-Type", "application/json")
+                .addHeader("HTTP-Referer", "https://pinster.app")
+                .addHeader("X-Title", "Pinster")
+                .post(body.toRequestBody("application/json".toMediaType()))
+                .build()
+
+            client.newCall(request).execute().use { response ->
+                val responseBody = response.body?.string().orEmpty()
+
+                if (response.code == 402) {
+                    return Result.failure(Exception("Not enough OpenRouter credits for this request. Try a shorter question or lower-cost model."))
+                }
+                if (!response.isSuccessful) {
+                    return Result.failure(Exception("HTTP ${response.code}: $responseBody"))
+                }
+
+                val json = JSONObject(responseBody)
+                val content = json.optJSONArray("choices")
+                    ?.optJSONObject(0)
+                    ?.optJSONObject("message")
+                    ?.optString("content")
+                    ?.trim()
+                    .orEmpty()
+
+                if (content.isBlank() || content == "null") {
+                    return Result.failure(Exception("AI returned an empty response."))
+                }
+
+                Result.success(content)
+            }
+
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    // ── AI Text Edit (Secondary Model) ─────────────────────────────
+
+    fun generateTextEdit(
+        endpoint: String,
+        model: String,
+        apiKey: String,
+        selectedText: String,
+        instruction: String,
+        contextHint: String = "",
+        maxTokens: Int = 1500
+    ): Result<String> {
+
+        return try {
+
+            val url = endpoint.trimEnd('/') + "/chat/completions"
+
+            val systemPrompt = """
+You are a precise text editor. You follow the user's editing instruction exactly.
+
+RULES:
+- Apply ONLY the requested transformation.
+- Preserve the original meaning and intent.
+- Do NOT add information not present in the original text.
+- Do NOT remove important factual content unless the instruction requires it.
+- Return ONLY the edited text, no explanations or meta-commentary.
+- If context is provided, use it to maintain consistency but do not include it in output.
+""".trimIndent()
+
+            val contextBlock = if (contextHint.isNotBlank()) "\n\nCONTEXT:\n$contextHint" else ""
+
+            val userPrompt = """
+TEXT TO EDIT:
+$selectedText$contextBlock
+
+INSTRUCTION: $instruction
+
+Return only the edited text.
+""".trimIndent()
+
+            val messages = JSONArray()
+                .put(JSONObject().put("role", "system").put("content", systemPrompt))
+                .put(JSONObject().put("role", "user").put("content", userPrompt))
+
+            val body = JSONObject()
+                .put("model", model)
+                .put("messages", messages)
+                .put("max_tokens", maxTokens)
+                .put("temperature", 0.4)
+                .put("reasoning", JSONObject().put("effort", "none"))
+                .toString()
+
+            val request = Request.Builder()
+                .url(url)
+                .addHeader("Authorization", "Bearer $apiKey")
+                .addHeader("Content-Type", "application/json")
+                .addHeader("HTTP-Referer", "https://pinster.app")
+                .addHeader("X-Title", "Pinster")
+                .post(body.toRequestBody("application/json".toMediaType()))
+                .build()
+
+            client.newCall(request).execute().use { response ->
+                val responseBody = response.body?.string().orEmpty()
+
+                if (response.code == 402) {
+                    return Result.failure(Exception("Not enough OpenRouter credits. Try shorter text or lower-cost model."))
+                }
+                if (!response.isSuccessful) {
+                    return Result.failure(Exception("HTTP ${response.code}: $responseBody"))
+                }
+
+                val json = JSONObject(responseBody)
+                val content = json.optJSONArray("choices")
+                    ?.optJSONObject(0)
+                    ?.optJSONObject("message")
+                    ?.optString("content")
+                    ?.trim()
+                    .orEmpty()
+
+                if (content.isBlank() || content == "null") {
+                    return Result.failure(Exception("AI returned an empty response."))
+                }
+
+                Result.success(content)
+            }
+
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
     fun testConnection(
         endpoint: String,
         model: String,
