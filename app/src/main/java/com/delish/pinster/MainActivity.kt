@@ -2214,7 +2214,24 @@ override fun onCreate(savedInstanceState: Bundle?) {
             }
             2003 -> {
                 val uri = data?.data ?: return
-                val name = uri.lastPathSegment?.substringAfterLast('/') ?: "document"
+                var name = uri.lastPathSegment?.substringAfterLast('/') ?: "document"
+                if (!name.contains('.')) {
+                    val mime = contentResolver.getType(uri) ?: ""
+                    val ext = when {
+                        mime.contains("pdf") -> ".pdf"
+                        mime.contains("wordprocessingml") || mime.equals("application/msword", true) -> ".docx"
+                        mime.contains("spreadsheet") || mime.contains("excel") || mime.equals("application/vnd.ms-excel", true) -> ".xlsx"
+                        mime.contains("presentation") || mime.equals("application/vnd.ms-powerpoint", true) -> ".pptx"
+                        mime.equals("text/plain", true) -> ".txt"
+                        mime.equals("text/csv", true) -> ".csv"
+                        mime.equals("text/html", true) -> ".html"
+                        mime.equals("text/xml", true) -> ".xml"
+                        mime.equals("application/json", true) -> ".json"
+                        mime.equals("text/rtf", true) || mime.equals("application/rtf", true) -> ".rtf"
+                        else -> ""
+                    }
+                    name = name + ext
+                }
                 val content = DocumentReader.read(this@MainActivity, uri, name)
                 pendingDocumentContent = content
                 pendingDocumentName = name
