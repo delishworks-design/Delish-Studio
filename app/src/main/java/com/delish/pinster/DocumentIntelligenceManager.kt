@@ -159,7 +159,7 @@ object DocumentIntelligenceManager {
             apiKey = apiKey,
             selectedText = selectedText,
             instruction = instruction,
-            contextHint = if (profile != null) "" else "",
+            contextHint = contextHint,
             maxTokens = 1500
         )
 

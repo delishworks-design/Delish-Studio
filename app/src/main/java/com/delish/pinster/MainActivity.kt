@@ -102,6 +102,9 @@ class MainActivity : Activity() {
     private var currentChatId: String = ""
     private var chatCameraPhotoPath: String? = null
     private var pendingImageFile: java.io.File? = null
+    private enum class DocumentState { IDLE, UNDERSTANDING, READY, ERROR }
+    private var documentState = DocumentState.IDLE
+    private var documentErrorMessage: String? = null
     private var pendingDocumentContent: String? = null
     private var pendingDocumentName: String? = null
     private var pendingDocumentProfile: DocumentProfile? = null
@@ -1788,6 +1791,8 @@ override fun onCreate(savedInstanceState: Bundle?) {
         pendingImageFile = null
         pendingDocumentContent = null
         pendingDocumentName = null
+        documentState = DocumentState.IDLE
+        documentErrorMessage = null
         chatImagePreviewContainer.visibility = View.GONE
         chatDocPreviewContainer.visibility = View.GONE
         chatThinkingText.visibility = View.GONE
@@ -1799,7 +1804,17 @@ override fun onCreate(savedInstanceState: Bundle?) {
         val t = chatInput.text.toString().trim()
         val imgFile = pendingImageFile
         val docContent = pendingDocumentContent
+        val docState = documentState
         if ((t.isEmpty() && imgFile == null && docContent == null) || chatBusy) return
+
+        if (docContent != null && docState == DocumentState.UNDERSTANDING) {
+            addChatBotFailed("Analyzing document\u2026 Please wait.")
+            return
+        }
+        if (docContent != null && docState == DocumentState.ERROR) {
+            addChatBotFailed("Document understanding failed: ${documentErrorMessage ?: "Unknown error"}. Please re-attach the document.")
+            return
+        }
 
         val urlPattern = Regex("""https?://\S+""")
         val detectedUrl = urlPattern.find(t)?.value
@@ -1820,21 +1835,22 @@ override fun onCreate(savedInstanceState: Bundle?) {
 
         hideChatPlaceholder()
 
+        val docName = pendingDocumentName
+        val docProfile = pendingDocumentProfile
+        val docFingerprint = pendingDocumentFingerprint
+
         val userMsg = when {
             imgFile != null && t.isNotEmpty() -> t
             imgFile != null -> getString(R.string.sent_image)
-            docContent != null && t.isNotEmpty() -> getString(R.string.attached_document, t, pendingDocumentName ?: "")
-            docContent != null -> getString(R.string.sent_document, pendingDocumentName ?: "")
+            docContent != null && t.isNotEmpty() -> getString(R.string.attached_document, t, docName ?: "")
+            docContent != null -> getString(R.string.sent_document, docName ?: "")
             else -> t
         }
         val indicator = when {
-            docContent != null && t.isNotEmpty() -> "\uD83D\uDCCE $pendingDocumentName\n\n$t"
-            docContent != null -> "\uD83D\uDCCE $pendingDocumentName"
+            docContent != null && t.isNotEmpty() -> "\uD83D\uDCCE $docName\n\n$t"
+            docContent != null -> "\uD83D\uDCCE $docName"
             else -> t
         }
-
-        val docProfile = pendingDocumentProfile
-        val docFingerprint = pendingDocumentFingerprint
 
         when {
             imgFile != null -> addChatUserWithImage(userMsg, imgFile)
@@ -1845,37 +1861,31 @@ override fun onCreate(savedInstanceState: Bundle?) {
         clearPendingImage()
         clearPendingDocument()
 
-        if (docContent != null && docProfile != null && docFingerprint != null && t.isNotBlank()) {
+        if (docContent != null && docState == DocumentState.READY && docProfile != null && docFingerprint != null && t.isNotBlank()) {
             chatScope.launch(Dispatchers.IO) {
                 try {
                     val answer = DocumentIntelligenceManager.analyze(
                         this@MainActivity, docFingerprint, t, docProfile
                     )
-                    val botMsg = "\uD83D\uDCC4 **$pendingDocumentName**\n\n$answer"
+                    val botMsg = "\uD83D\uDCC4 **$docName**\n\n$answer"
                     launch(Dispatchers.Main) {
                         addChatBot(botMsg)
                         resetChatUI()
                     }
                 } catch (e: Exception) {
-                    val sec = SecureSettings(this@MainActivity)
-                    val ep = sec.getEndpoint(); val md = sec.getDocumentSecondaryModel(); val ky = sec.getApiKey()
-                    if (ep.isBlank() || md.isBlank() || ky.isBlank()) {
-                        launch(Dispatchers.Main) { addChatBotFailed("API not configured."); resetChatUI() }
-                        return@launch
+                    launch(Dispatchers.Main) {
+                        addChatBotFailed("Document analysis failed: ${e.message}")
+                        resetChatUI()
                     }
-                    val contextResult = DocumentContextBuilder.build(docProfile, t, null)
-                    val client = AIClient()
-                    val result = client.generateDocumentAnalysis(ep, md, ky, contextResult.fullContext, t, 2000)
-                    result.fold(
-                        onSuccess = { answer ->
-                            val botMsg = "\uD83D\uDCC4 **$pendingDocumentName**\n\n$answer"
-                            launch(Dispatchers.Main) { addChatBot(botMsg); resetChatUI() }
-                        },
-                        onFailure = { err ->
-                            launch(Dispatchers.Main) { addChatBotFailed("Document analysis failed: ${err.message}"); resetChatUI() }
-                        }
-                    )
                 }
+            }
+            return
+        }
+
+        if (docContent != null && t.isBlank()) {
+            chatScope.launch(Dispatchers.Main) {
+                addChatBot("Document attached. Ask a question about \u201C$docName\u201D.")
+                resetChatUI()
             }
             return
         }
@@ -1884,10 +1894,7 @@ override fun onCreate(savedInstanceState: Bundle?) {
         val imageNote = if (imgFile != null) {
             "\n\nIMPORTANT: The user has sent an image with their message. If your model supports vision/image analysis, describe and analyze the image in detail. If your model does NOT support vision, respond honestly: 'I can see you sent an image but I cannot analyze images — my model does not have vision capability. Please describe the image to me and I will help.'"
         } else ""
-        val docNote = if (docContent != null) {
-            "\n\nDOCUMENT ATTACHMENT: The user's message contains an attached document between ---DOCUMENT CONTENT--- and ---END DOCUMENT--- markers. Read the ENTIRE document content carefully. Preserve formatting references (headings, bold, lists, tables). Summarize structure and key points. Quote specific sections when relevant. If the user asks a question, answer using the document content."
-        } else ""
-        val systemContent = AIInspector.buildSystemPrompt() + imageNote + docNote
+        val systemContent = AIInspector.buildSystemPrompt() + imageNote
 
         full.put(org.json.JSONObject().apply { put("role", "system"); put("content", systemContent) })
         for (m in chatHistory) full.put(org.json.JSONObject().apply { put("role", m.first); put("content", m.second) })
@@ -2223,6 +2230,8 @@ override fun onCreate(savedInstanceState: Bundle?) {
         pendingDocumentName = null
         pendingDocumentProfile = null
         pendingDocumentFingerprint = null
+        documentState = DocumentState.IDLE
+        documentErrorMessage = null
         chatDocPreviewContainer.visibility = View.GONE
     }
 
@@ -2276,6 +2285,8 @@ override fun onCreate(savedInstanceState: Bundle?) {
                 pendingDocumentName = name
                 pendingDocumentProfile = null
                 pendingDocumentFingerprint = null
+                documentState = DocumentState.UNDERSTANDING
+                documentErrorMessage = null
                 chatDocPreviewName.text = "\uD83D\uDCC4 $name"
                 chatDocPreviewContainer.visibility = View.VISIBLE
 
@@ -2286,8 +2297,11 @@ override fun onCreate(savedInstanceState: Bundle?) {
                         )
                         pendingDocumentProfile = result.profile
                         pendingDocumentFingerprint = result.fingerprint
+                        documentState = DocumentState.READY
                     } catch (e: Exception) {
                         android.util.Log.w("PINSTER_DOC", "Understanding failed: ${e.message}")
+                        documentState = DocumentState.ERROR
+                        documentErrorMessage = e.message ?: "Document understanding failed"
                     }
                 }
             }

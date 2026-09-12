@@ -191,7 +191,7 @@ Generate accurate Pinterest SEO from this evidence only.
                     "response_format",
                     JSONObject().put("type", "json_object")
                 )
-                .put("max_tokens", 4000)
+                .put("max_tokens", 2000)
                 .put(
                     "reasoning",
                     JSONObject().put("effort", "none")
